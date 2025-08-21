@@ -51,7 +51,8 @@ def main():
     gcs_bucket_name = os.environ.get("GCS_BUCKET")
     input_parquet_path = os.environ.get("INPUT_PARQUET_PATH")
     output_pickle_path = os.environ.get("OUTPUT_PICKLE_PATH")
-    model_name = 'BAAI/bge-m3'
+    model_name = 'Qwen/Qwen3-Embedding-4B'
+    sample_size_str = os.environ.get("SAMPLE_SIZE") # leave blank for production
 
     if not all([gcs_bucket_name, input_parquet_path, output_pickle_path]):
         logging.error("Missing one or more environment variables: GCS_BUCKET, INPUT_PARQUET_PATH, OUTPUT_PICKLE_PATH")
@@ -71,13 +72,27 @@ def main():
     df = pd.read_parquet(local_input_path)
     logging.info(f"Loaded {len(df)} records from Parquet file.")
     
+    # --- Sample the DataFrame if SAMPLE_SIZE is set ---
+    if sample_size_str:
+        try:
+            sample_size = int(sample_size_str)
+            if sample_size > 0 and sample_size < len(df):
+                logging.info(f"Sampling {sample_size} records from the DataFrame for testing.")
+                df = df.sample(n=sample_size, random_state=42) # random_state for reproducibility
+                logging.info(f"DataFrame now contains {len(df)} records.")
+            else:
+                logging.warning(f"SAMPLE_SIZE ({sample_size}) is invalid or larger than the dataset. Processing the full dataset.")
+        except ValueError:
+            logging.error("SAMPLE_SIZE environment variable is not a valid integer. Processing the full dataset.")
+    
     if 'corpus_text' not in df.columns:
         logging.error("Parquet file must contain a 'corpus_text' column.")
         return
         
     # Load Model and Generate Embeddings
     logging.info(f"Loading SentenceTransformer model: {model_name}")
-    model = SentenceTransformer(model_name)
+    # Add trust_remote_code=True for certain models like Qwen
+    model = SentenceTransformer(model_name, trust_remote_code=True)
     logging.info("Model loaded.")
 
     corpus = df['corpus_text'].tolist()
@@ -93,11 +108,13 @@ def main():
     for i in range(0, len(corpus), batch_size):
         batch_corpus = corpus[i:i+batch_size]
         batch_num = (i // batch_size) + 1
+        
+        # model.encode returns a numpy array
+        batch_embeddings = model.encode(batch_corpus, show_progress_bar=False)
+        all_embeddings.extend(batch_embeddings)
+        
         logging.info(f"Batch {batch_num}/{num_batches} complete. Current RAM usage: {process.memory_info().rss / 1024 ** 2:.2f} MB")
 
-        # model.encode returns a numpy array
-        batch_embeddings = model.encode(batch_corpus)
-        all_embeddings.extend(batch_embeddings)
 
     embeddings = np.array(all_embeddings)
     logging.info("Embeddings generated successfully.")
