@@ -1,0 +1,44 @@
+---
+version: "2.0"
+
+services:
+  repo-embedder:
+    image: example-account/example-image::1.4
+    expose:
+      - port: 3000
+        as: 80
+        to:
+          - global: true
+    env:
+      - GCS_BUCKET=
+      - INPUT_PARQUET_PATH=
+      - OUTPUT_PICKLE_PATH=
+      - GOOGLE_APPLICATION_CREDENTIALS_BASE64=
+
+profiles:
+  compute:
+    repo-embedder:
+      resources:
+        cpu:
+          units: 8
+        memory:
+          size: 8Gi
+        storage:
+          - size: 20Gi
+        gpu:
+          units: 1
+          attributes:
+            vendor:
+              nvidia:
+  placement:
+    dcloud:
+      pricing:
+        repo-embedder:
+          denom: uakt
+          amount: 100000
+          
+deployment:
+  repo-embedder:
+    dcloud:
+      profile: repo-embedder
+      count: 1
