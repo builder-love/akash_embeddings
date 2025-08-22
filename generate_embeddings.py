@@ -8,6 +8,7 @@ import numpy as np
 import base64
 from dotenv import load_dotenv
 import psutil
+import torch
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -95,11 +96,15 @@ def main():
     model = SentenceTransformer(model_name, trust_remote_code=True)
     logging.info("Model loaded.")
 
+    # Clear PyTorch CUDA cache before starting the encoding loop
+    torch.cuda.empty_cache()
+    logging.info("Cleared PyTorch CUDA cache.")
+
     corpus = df['corpus_text'].tolist()
     repo = df['repo'].tolist()
     
     # Process in batches with explicit logging
-    batch_size = 128
+    batch_size = 32
     num_batches = (len(corpus) + batch_size - 1) // batch_size
     all_embeddings = []
 

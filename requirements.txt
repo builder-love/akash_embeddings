@@ -1,8 +1,19 @@
+# requirements.txt
+
+# Core ML Libraries
 sentence-transformers==4.1.0
 accelerate==0.29.3
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Data Handling
 numpy<2.0
 pandas==2.1.4
+
+# Cloud & Utilities
 google-cloud-storage==2.14.0
 python-dotenv==1.0.0
 pyarrow==14.0.1
 psutil
+tqdm

@@ -1,2 +1,9 @@
+# manifests
 deploy.yaml
 deploy_test.yaml
+
+# secrets
+.env
+
+# pythong environments
+.python-version
