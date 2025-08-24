@@ -7,3 +7,6 @@ deploy_test.yaml
 
 # pythong environments
 .python-version
+
+# docker
+get-docker.sh
