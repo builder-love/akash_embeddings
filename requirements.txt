@@ -1,11 +1,11 @@
 # requirements.txt
 
 # Core ML Libraries
-sentence-transformers==4.1.0
-accelerate==0.29.3
-torch==2.3.1
-torchvision==0.18.1
-torchaudio==2.3.1
+sentence-transformers==5.0.0
+accelerate==1.9.0
+torch==2.7.1
+torchvision==0.22.1
+torchaudio==2.7.1
 langchain==0.3.27
 
 # Data Handling

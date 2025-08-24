@@ -10,19 +10,17 @@ from dotenv import load_dotenv
 import psutil
 import torch
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from collections import defaultdict
-from tqdm import tqdm
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def main():
     """
-    Main function to generate embeddings with a chunking strategy.
-    Downloads data, splits long documents into chunks, computes embeddings for each chunk,
-    and uploads the results back to GCS.
+    Main function to generate embeddings with a checkpointing strategy.
+    For each batch of chunks, it computes embeddings and streams the results
+    as a Parquet file to a GCS checkpoint directory.
     """
-    logging.info("Starting embedding generation process with chunking.")
+    logging.info("Starting embedding generation process with checkpointing.")
     process = psutil.Process(os.getpid())
     logging.info(f"Process ID: {process.pid}")
     logging.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -44,12 +42,12 @@ def main():
     # --- 2. Configuration ---
     gcs_bucket_name = os.environ.get("GCS_BUCKET")
     input_parquet_path = os.environ.get("INPUT_PARQUET_PATH")
-    output_pickle_path = os.environ.get("OUTPUT_PICKLE_PATH")
+    checkpoint_gcs_path = os.environ.get("CHECKPOINT_GCS_PATH") # New path for checkpoints
     model_name = 'Qwen/Qwen3-Embedding-4B'
     sample_size_str = os.environ.get("SAMPLE_SIZE")
 
-    if not all([gcs_bucket_name, input_parquet_path, output_pickle_path]):
-        logging.error("Missing required environment variables.")
+    if not all([gcs_bucket_name, input_parquet_path, checkpoint_gcs_path]):
+        logging.error("Missing required environment variables: GCS_BUCKET, INPUT_PARQUET_PATH, CHECKPOINT_GCS_PATH")
         return
 
     # --- 3. Download Data ---
@@ -81,75 +79,77 @@ def main():
     # --- 5. Chunking Logic ---
     logging.info("Applying chunking strategy to the corpus...")
     code_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2048,  # Max size of each chunk
-        chunk_overlap=128 # Overlap between chunks to preserve context
+        chunk_size=2048,
+        chunk_overlap=128
     )
 
     chunked_data = []
-    # Using tqdm for a progress bar during the chunking process
-    for index, row in tqdm(df.iterrows(), total=df.shape[0], desc="Chunking Documents"):
-        # Ensure corpus_text is a string
+    for index, row in df.iterrows():
         text = row['corpus_text'] if isinstance(row['corpus_text'], str) else ""
         repo_name = row['repo']
-        
-        # Split the text into chunks
         chunks = code_splitter.split_text(text)
         for i, chunk in enumerate(chunks):
             chunked_data.append({
                 'repo': repo_name,
-                'chunk_id': f"{repo_name}_chunk_{i}", # Unique ID for each chunk
+                'chunk_id': f"{repo_name}_chunk_{i}",
                 'corpus_text': chunk
             })
 
-    # Create a new DataFrame from the chunked data
     chunked_df = pd.DataFrame(chunked_data)
     logging.info(f"Original {len(df)} documents were split into {len(chunked_df)} chunks.")
 
-    # --- 6. Load Model and Generate Embeddings ---
+    # --- 6. Load and Optimize Model ---
     logging.info(f"Loading SentenceTransformer model: {model_name}")
-    model = SentenceTransformer(model_name, trust_remote_code=True)
-    logging.info("Model loaded.")
+    model_kwargs = {'torch_dtype': torch.float16}
+    model = SentenceTransformer(
+        model_name, 
+        trust_remote_code=True,
+        model_kwargs=model_kwargs
+    )
+    model = torch.compile(model)
+    logging.info("Model loaded in float16 and compiled.")
 
     torch.cuda.empty_cache()
     logging.info("Cleared PyTorch CUDA cache.")
 
-    corpus_chunks = chunked_df['corpus_text'].tolist()
+    # --- 7. Process Batches and Upload Checkpoints ---
+    batch_size = 1024
+    num_chunks = len(chunked_df)
+    num_batches = (num_chunks + batch_size - 1) // batch_size
     
-    batch_size = 256
-    logging.info(f"Starting embedding encoding for {len(corpus_chunks)} chunks...")
+    logging.info(f"Starting embedding encoding for {num_chunks} chunks in {num_batches} batches of size {batch_size}.")
 
-    # Use the model's built-in encode method with a progress bar
-    all_embeddings = model.encode(
-        corpus_chunks,
-        batch_size=batch_size,
-        show_progress_bar=True
-    )
-    logging.info("Embeddings generated successfully.")
-
-    # --- 7. Prepare and Upload Results ---
-    # Group embeddings by the original repository
-    # Using defaultdict to simplify appending to lists
-    repo_embeddings = defaultdict(list)
-    
-    repo_names = chunked_df['repo'].tolist()
-
-    for i in range(len(repo_names)):
-        repo_name = repo_names[i]
-        embedding = all_embeddings[i]
-        repo_embeddings[repo_name].append(embedding)
-
-    # Convert defaultdict back to a regular dict for saving
-    results = dict(repo_embeddings)
-    logging.info(f"Aggregated embeddings for {len(results)} unique repositories.")
-    
-    local_output_path = "/tmp/repo_embeddings_chunked.pkl"
-    with open(local_output_path, 'wb') as f_out:
-        pickle.dump(results, f_out)
+    for i in range(0, num_chunks, batch_size):
+        batch_df = chunked_df.iloc[i:i+batch_size]
+        batch_num = (i // batch_size) + 1
         
-    output_blob = bucket.blob(output_pickle_path)
-    logging.info(f"Uploading results to {output_pickle_path}...")
-    output_blob.upload_from_filename(local_output_path)
-    logging.info("Upload complete. Process finished.")
+        logging.info(f"Processing Batch {batch_num}/{num_batches}...")
+        
+        batch_corpus = batch_df['corpus_text'].tolist()
+        batch_embeddings = model.encode(batch_corpus, show_progress_bar=False)
+        
+        # Create a DataFrame for the current batch's results
+        results_df = pd.DataFrame({
+            'repo': batch_df['repo'].tolist(),
+            'chunk_id': batch_df['chunk_id'].tolist(),
+            'embedding': list(batch_embeddings)
+        })
+        
+        # Save batch to a local temp file
+        local_output_path = f"/tmp/batch_{batch_num}.parquet"
+        results_df.to_parquet(local_output_path)
+        
+        # Upload the batch file to GCS
+        gcs_output_path = os.path.join(checkpoint_gcs_path, f"batch_{batch_num}.parquet")
+        output_blob = bucket.blob(gcs_output_path)
+        output_blob.upload_from_filename(local_output_path)
+        
+        logging.info(f"Batch {batch_num}/{num_batches} complete. Checkpoint saved to {gcs_output_path}. RAM: {process.memory_info().rss / 1024 ** 2:.2f} MB")
+        
+        # Clean up local temp file
+        os.remove(local_output_path)
+
+    logging.info("All batches processed and uploaded successfully. Process finished.")
 
 if __name__ == "__main__":
     main()
