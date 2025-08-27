@@ -15,6 +15,7 @@ pandas==2.1.4
 # Cloud & Utilities
 google-cloud-storage==2.14.0
 python-dotenv==1.0.0
-pyarrow==14.0.1
+pyarrow==21.0.0
 psutil
 tqdm
+google-auth
