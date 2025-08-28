@@ -12,7 +12,7 @@ GCS_BUCKET_NAME = "bl-repo-corpus-public"
 SOURCE_PICKLE_PATH = "embeddings_data/repo_embeddings_qwen_4b.pkl"
 # This is now the BASE path. A unique subfolder will be added to it.
 BASE_DESTINATION_GCS_PATH = "embeddings_data/akash-qwen-checkpoints" 
-BATCH_SIZE = 25000
+BATCH_SIZE = 10000
 # ---------------------
 
 def convert_pickle_to_batched_parquet():
